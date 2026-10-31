@@ -1,0 +1,18 @@
+{
+  "name": "selfie-beep",
+  "version": "1.0.0",
+  "description": "Captura un botón Bluetooth tipo selfie stick desde el navegador y hace sonar un beep en la PC vía WebSockets",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "node-wav-player": "^1.0.0",
+    "ws": "^8.22.0"
+  }
+}

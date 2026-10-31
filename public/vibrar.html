@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0d1117">
+  <link rel="icon" href="icon-192.png">
+  <title>Vibrar celular</title>
+  <style>
+    :root {
+      --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #e6edf3; --muted: #8b949e;
+      --ok: #3fb950; --bad: #f85149; --accent: #58a6ff;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      background: var(--bg); color: var(--text);
+      font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      display: flex; flex-direction: column; gap: 14px; padding: 16px;
+    }
+    h1 { font-size: 1.15rem; margin: 0; }
+    #pad { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; min-height: 320px; }
+    button {
+      background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 16px;
+      font: 800 clamp(4rem, 18vmin, 12rem)/1 system-ui, sans-serif; cursor: pointer;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+      transition: transform .1s ease-out, background .15s, border-color .15s;
+    }
+    button small { font-size: .9rem; font-weight: 500; color: var(--muted); }
+    button:hover { border-color: var(--accent); }
+    button:active { transform: scale(.97); }
+    button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+    button.ok { background: #1f3a26; border-color: var(--ok); }
+    button.bad { background: #3a1f1f; border-color: var(--bad); }
+    #status { color: var(--muted); min-height: 1.45em; }
+    #status.bad { color: var(--bad); }
+  </style>
+</head>
+<body>
+  <h1>Vibrar celular</h1>
+  <div id="pad">
+    <button data-p="a">A<small>1 × 170 ms</small></button>
+    <button data-p="b">B<small>2 × 150 ms</small></button>
+    <button data-p="c">C<small>3 × 170 ms</small></button>
+    <button data-p="d">D<small>4 × 150 ms</small></button>
+  </div>
+  <div id="status" role="status"></div>
+
+<script>
+  const statusEl = document.getElementById('status');
+  const show = (btn, ok, text) => {
+    statusEl.textContent = text;
+    statusEl.className = ok ? '' : 'bad';
+    btn.classList.add(ok ? 'ok' : 'bad');
+    setTimeout(() => btn.classList.remove('ok', 'bad'), 300);
+  };
+
+  document.getElementById('pad').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    const p = btn.dataset.p.toUpperCase();
+    try {
+      const res = await fetch(`/vibrate/${btn.dataset.p}`, { method: 'POST' });
+      if (res.status === 403) return show(btn, false, 'Solo se puede usar desde la PC del servidor (http://localhost:3000)');
+      if (!res.ok) return show(btn, false, `Error ${res.status}`);
+      const { phones } = await res.json();
+      show(btn, phones > 0, phones > 0 ? `${p} enviado a ${phones} celular(es)` : 'No hay ningún celular conectado: abrí Selfie Beep y tocá Iniciar');
+    } catch {
+      show(btn, false, 'El servidor no responde');
+    }
+  });
+</script>
+</body>
+</html>
