@@ -9,20 +9,22 @@ npm install
 npm start
 ```
 
-1. En la consola aparece la URL de la red local, p. ej. `http://192.168.0.10:3000`.
-2. Abrí esa URL en el celular (misma Wi-Fi). El WebSocket va en el mismo host y puerto que la página.
-3. Emparejá el selfie stick por Bluetooth con el celular y presioná el botón: la PC hace beep.
+Abrí `http://localhost:3000` en la PC: se ve el panel de vibración (A, B, C) con un temporizador de 30 s
+que arranca al presionar una letra. Los botones solo funcionan desde la propia PC.
+El celular se maneja únicamente con la app Android (ver abajo); ya no hay PWA ni WebSocket.
 
-## HTTPS e instalación (https://api.poloit.com.ar)
+## API para agentes (Claude ⇄ celular)
 
-La app es instalable (PWA) solo si se abre por HTTPS. Hay dos opciones:
+`/api/*` (solo desde esta PC) permite mandar vibraciones, programar guiones con esperas y recibir los beeps.
+Documentación completa en [`docs/API.md`](docs/API.md).
+Lo que se va haciendo queda en [`docs/BITACORA.md`](docs/BITACORA.md).
 
-- **Proxy con TLS (recomendado):** nginx, Caddy o un Cloudflare Tunnel apuntando a `http://localhost:3000`.
-  El proxy tiene que reenviar el upgrade de WebSocket. Con Caddy alcanza con:
-  `api.poloit.com.ar { reverse_proxy localhost:3000 }`
-- **TLS directo en Node:** `TLS_CERT=fullchain.pem TLS_KEY=privkey.pem HTTP_PORT=443 npm start`
+## Estructura
 
-Después, en Chrome/Edge (Android o PC), usá "Instalar app"; en iOS Safari, Compartir → "Agregar a inicio".
+- `server.js`: servidor único (estáticos, `/beep`, `/events` SSE hacia el celular, `/vibrate/:x` del panel y `/api/*`).
+- `public/`: `vibrar.html` (panel), `selfie-beep.apk` (app compilada).
+- `android/`: código de la app y `build.sh`. Servicio que escucha "subir volumen" y vibra al recibir `/events`.
+- `beep-key.txt`: clave Bearer de `/beep` y `/events` (no compartir).
 
 ## Beep por HTTP (lo usa la app Android)
 

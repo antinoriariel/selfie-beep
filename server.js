@@ -1,4 +1,4 @@
-// server.js — HTTP(S) (puerto 3000) sirve public/ y, en el mismo puerto, un WebSocket que hace "beep" al recibir "BEEP"
+// server.js — HTTP(S) (puerto 3000): sirve public/ (la raíz es vibrar.html), POST /beep y /events para la app Android
 import http from 'node:http';
 import https from 'node:https';
 import os from 'node:os';
@@ -6,7 +6,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFile, writeFile } from 'node:fs/promises';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { WebSocketServer } from 'ws';
 import wavPlayer from 'node-wav-player';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -30,7 +29,6 @@ const validKey = (header = '') => {
   const want = Buffer.from(BEEP_KEY);
   return given.length === want.length && timingSafeEqual(given, want);
 };
-const HEARTBEAT_MS = 15_000;
 
 // ---------------------------------------------------------------------------
 // Utilidades de log
@@ -98,7 +96,6 @@ const MIME = {
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
-  '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
@@ -110,7 +107,6 @@ const VIBRATIONS = {
   a: [0, 170],
   b: [0, 150, 200, 150],
   c: [0, 170, 200, 170, 200, 170],
-  d: [0, 150, 200, 150, 200, 150, 200, 150],
 };
 const phones = new Set(); // respuestas abiertas de GET /events (Server-Sent Events) de la app Android
 
@@ -118,9 +114,113 @@ const phones = new Set(); // respuestas abiertas de GET /events (Server-Sent Eve
 const isLocal = (req) =>
   ['127.0.0.1', '::1'].includes(cleanIp(req.socket.remoteAddress)) && !req.headers['cf-connecting-ip'];
 
+const sendVibration = (type, ms) => {
+  const pattern = ms ? [0, ms] : VIBRATIONS[type]; // ms: una sola vibración larga de esa duración
+  for (const p of phones) p.write(`data: ${pattern.join(',')}
+
+`);
+  log(`📳 Vibración ${type.toUpperCase()} → ${phones.size} celular(es)`);
+};
+
+// ---------------------------------------------------------------------------
+// API local (/api/*, solo desde esta PC) para que un agente (Claude) maneje el celular y se entere de los beeps.
+// ---------------------------------------------------------------------------
+const beeps = []; // últimos beeps recibidos: { id, time (ISO), ip }
+let beepSeq = 0;
+let waiters = []; // long-polls esperando un beep nuevo
+const recordBeep = (ip) => {
+  beeps.push({ id: ++beepSeq, time: new Date().toISOString(), ip });
+  if (beeps.length > 100) beeps.shift();
+  const w = waiters; waiters = [];
+  w.forEach((f) => f());
+};
+
+// Guion en ejecución: pasos [{vibrate:'a'|'b'|'c'} | {wait:segundos}] repetidos `repeat` veces (0 = hasta /api/stop)
+let job = null; // { steps, repeat, round, step, stopped, timer }
+const stopJob = () => { if (job) { job.stopped = true; clearTimeout(job.timer); job = null; } };
+const runJob = (steps, repeat) => {
+  stopJob();
+  const j = (job = { steps, repeat, round: 1, step: 0, stopped: false, timer: null });
+  const next = () => {
+    if (j.stopped) return;
+    if (j.step >= steps.length) {
+      j.step = 0;
+      if (repeat && ++j.round > repeat) return void (job === j && (job = null));
+    }
+    const s = steps[j.step++];
+    if (s.vibrate) { sendVibration(s.vibrate); next(); } else j.timer = setTimeout(next, s.wait * 1000);
+  };
+  next();
+};
+const parseSteps = (b) => {
+  const steps = Array.isArray(b.steps) ? b.steps : [];
+  const repeat = b.repeat === undefined ? 1 : b.repeat;
+  if (!steps.length || steps.length > 200 || !Number.isInteger(repeat) || repeat < 0 || repeat > 10000) return null;
+  const clean = [];
+  for (const s of steps) {
+    if (typeof s?.vibrate === 'string' && VIBRATIONS[s.vibrate.toLowerCase()]) clean.push({ vibrate: s.vibrate.toLowerCase() });
+    else if (typeof s?.wait === 'number' && s.wait >= 0.2 && s.wait <= 3600) clean.push({ wait: s.wait });
+    else return null;
+  }
+  // un guion infinito sin ninguna espera saturaría al celular
+  if ((repeat === 0 && !clean.some((s) => s.wait))) return null;
+  return { steps: clean, repeat };
+};
+const readJson = async (req) => {
+  let n = 0; const chunks = [];
+  for await (const c of req) { if ((n += c.length) > 64_000) throw new Error('grande'); chunks.push(c); }
+  return JSON.parse(Buffer.concat(chunks).toString() || '{}');
+};
+const json = (res, code, obj) => res.writeHead(code, { 'Content-Type': 'application/json' }).end(JSON.stringify(obj));
+const status = () => ({
+  phones: phones.size,
+  lastBeepId: beepSeq,
+  running: job && { steps: job.steps, repeat: job.repeat, round: job.round },
+});
+
+async function api(req, res, urlPath, url) {
+  if (!isLocal(req)) return res.writeHead(403).end();
+  const route = `${req.method} ${urlPath}`;
+  if (route === 'GET /api/status') return json(res, 200, status());
+  if (route === 'POST /api/vibrate') {
+    const b = await readJson(req);
+    const type = String(b.type).toLowerCase();
+    if (!VIBRATIONS[type]) return json(res, 400, { error: 'type debe ser a, b o c' });
+    const ms = b.ms === undefined ? 0 : b.ms;
+    if (!Number.isInteger(ms) || ms < 0 || ms > 5000) return json(res, 400, { error: 'ms debe ser entero de 0 a 5000' });
+    stopJob();
+    sendVibration(type, ms);
+    return json(res, 200, status());
+  }
+  if (route === 'POST /api/script') {
+    const p = parseSteps(await readJson(req));
+    if (!p) return json(res, 400, { error: 'steps inválido (ver docs/API.md)' });
+    runJob(p.steps, p.repeat);
+    return json(res, 200, status());
+  }
+  if (route === 'POST /api/stop') { stopJob(); return json(res, 200, status()); }
+  if (route === 'GET /api/beeps') {
+    // ?since=<id> devuelve los beeps con id mayor; ?wait=<seg, máx 120> espera hasta que haya uno nuevo
+    const since = Number(url.searchParams.get('since')) || 0;
+    const wait = Math.min(Number(url.searchParams.get('wait')) || 0, 120);
+    const fresh = () => beeps.filter((x) => x.id > since);
+    if (!fresh().length && wait) {
+      await new Promise((resolve) => {
+        const t = setTimeout(resolve, wait * 1000);
+        waiters.push(() => { clearTimeout(t); resolve(); });
+        req.on('close', resolve);
+      });
+    }
+    return json(res, 200, { beeps: fresh(), lastBeepId: beepSeq });
+  }
+  return res.writeHead(404).end();
+}
+
 const handler = async (req, res) => {
   try {
-    const urlPath = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+    const url = new URL(req.url, 'http://x');
+    const urlPath = decodeURIComponent(url.pathname);
+    if (urlPath.startsWith('/api/')) return await api(req, res, urlPath, url);
     const ip = cleanIp(req.headers['cf-connecting-ip'] || req.socket.remoteAddress);
     if (urlPath === '/events') {
       if (!validKey(req.headers.authorization)) {
@@ -139,7 +239,7 @@ const handler = async (req, res) => {
       log(`📱 Celular escuchando vibraciones: ${ip}  (activos: ${phones.size})`);
       return;
     }
-    const vibrate = urlPath.match(/^\/vibrate\/([a-d])$/);
+    const vibrate = urlPath.match(/^\/vibrate\/([a-c])$/);
     if (vibrate) {
       if (req.method !== 'POST') return res.writeHead(405, { Allow: 'POST' }).end();
       if (!isLocal(req)) return res.writeHead(403).end();
@@ -154,10 +254,11 @@ const handler = async (req, res) => {
         return res.writeHead(401).end();
       }
       beep();
+      recordBeep(ip);
       log(`🔔 BEEP (HTTP) desde ${ip}`);
       return res.writeHead(204).end();
     }
-    const rel = urlPath === '/' ? 'index.html' : urlPath.replace(/^\/+/, '');
+    const rel = urlPath === '/' ? 'vibrar.html' : urlPath.replace(/^\/+/, '');
     const filePath = path.resolve(PUBLIC_DIR, rel);
 
     // Evita path traversal (../../etc/passwd)
@@ -171,7 +272,8 @@ const handler = async (req, res) => {
       'Cache-Control': 'no-cache',
     });
     res.end(body);
-  } catch {
+  } catch (e) {
+    if (e instanceof SyntaxError || e.message === 'grande') return json(res, 400, { error: 'JSON inválido' });
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end('No encontrado');
   }
 };
@@ -180,70 +282,18 @@ const httpServer = TLS ? https.createServer(TLS, handler) : http.createServer(ha
 httpServer.listen(HTTP_PORT, HOST);
 
 // ---------------------------------------------------------------------------
-// Servidor WebSocket
+// Arranque
 // ---------------------------------------------------------------------------
-const wss = new WebSocketServer({ server: httpServer });
-
-wss.on('connection', (ws, req) => {
-  const ip = cleanIp(req.socket.remoteAddress);
-  ws.isAlive = true;
-  ws.on('pong', () => { ws.isAlive = true; });
-
-  log(`🔌 Cliente conectado: ${ip}  (activos: ${wss.clients.size})`);
-  ws.send(JSON.stringify({ type: 'hello', at: Date.now() }));
-
-  ws.on('message', (raw) => {
-    const msg = raw.toString().trim();
-    if (msg.toUpperCase() === 'BEEP') {
-      beep();
-      log(`🔔 BEEP desde ${ip}`);
-      ws.send(JSON.stringify({ type: 'ack', at: Date.now() }));
-    } else {
-      log(`ℹ️  Mensaje ignorado de ${ip}: ${msg.slice(0, 80)}`);
-    }
-  });
-
-  ws.on('close', (code) => {
-    log(`❌ Cliente desconectado: ${ip}  (código ${code}, activos: ${wss.clients.size})`);
-  });
-
-  ws.on('error', (err) => log(`⚠️  Error con ${ip}: ${err.message}`));
-});
-
-// Heartbeat: cierra conexiones "zombis" (p. ej., el celular apagó el Wi-Fi sin avisar)
-const heartbeat = setInterval(() => {
-  for (const ws of wss.clients) {
-    if (!ws.isAlive) {
-      ws.terminate();
-      continue;
-    }
-    ws.isAlive = false;
-    ws.ping();
-  }
-}, HEARTBEAT_MS);
-wss.on('close', () => clearInterval(heartbeat));
-
-// ---------------------------------------------------------------------------
-// Arranque: mostrar las IPs de la red local para abrir desde el celular
-// ---------------------------------------------------------------------------
-const lanIps = Object.values(os.networkInterfaces())
-  .flat()
-  .filter((i) => i && i.family === 'IPv4' && !i.internal)
-  .map((i) => i.address);
-
 console.log('\n  Selfie Beep listo');
 const proto = TLS ? 'https' : 'http';
-console.log(`  • Web App + WebSocket: ${proto}://localhost:${HTTP_PORT}`);
-for (const ip of lanIps) console.log(`                        ${proto}://${ip}:${HTTP_PORT}   ← abrí esta en el celular`);
+console.log(`  • Vibrar celular:    ${proto}://localhost:${HTTP_PORT}`);
 console.log(`  • POST /beep  con header  Authorization: Bearer <clave de beep-key.txt>`);
-console.log(`  • Vibrar el celular:     http://localhost:${HTTP_PORT}/vibrar.html   (solo desde esta PC)\n`);
+console.log('  (los botones solo funcionan desde esta PC)\n');
 
 // Cierre prolijo con Ctrl+C
 const shutdown = () => {
   log('Apagando servidores…');
   for (const p of phones) p.end();
-  for (const ws of wss.clients) ws.close(1001, 'Servidor apagándose');
-  wss.close();
   httpServer.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 1500).unref();
 };

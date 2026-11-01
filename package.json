@@ -1,7 +1,7 @@
 {
   "name": "selfie-beep",
   "version": "1.0.0",
-  "description": "Captura un botón Bluetooth tipo selfie stick desde el navegador y hace sonar un beep en la PC vía WebSockets",
+  "description": "Panel local para vibrar el celular y recibir beeps de la app Android",
   "type": "module",
   "main": "server.js",
   "scripts": {
@@ -12,7 +12,6 @@
   },
   "license": "MIT",
   "dependencies": {
-    "node-wav-player": "^1.0.0",
-    "ws": "^8.22.0"
+    "node-wav-player": "^1.0.0"
   }
 }
