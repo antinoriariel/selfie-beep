@@ -1,0 +1,12 @@
+
+  Selfie Beep listo
+  • Vibrar celular:    http://localhost:3000
+  • POST /beep  con header  Authorization: Bearer <clave de beep-key.txt>
+  (los botones solo funcionan desde esta PC)
+
+[16:57:43.021] 📱 Celular escuchando vibraciones: 181.99.127.161  (activos: 1)
+[16:57:43.153] 📳 Vibración A → 1 celular(es)
+[16:58:22.490] 📳 Vibración A → 1 celular(es)
+[16:58:39.849] 📳 Vibración A → 1 celular(es)
+[16:58:41.852] 📳 Vibración B → 1 celular(es)
+[16:58:43.858] 📳 Vibración C → 1 celular(es)
